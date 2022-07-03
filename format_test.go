@@ -7,6 +7,8 @@ import (
 )
 
 func Test_HeaderDecoding(t *testing.T) {
+	t.Parallel()
+
 	type args struct {
 		timestamp uint32
 		keySize   uint32
@@ -54,6 +56,8 @@ func Test_HeaderDecoding(t *testing.T) {
 }
 
 func Test_encodeKV(t *testing.T) {
+	t.Parallel()
+
 	type args struct {
 		timestamp uint32
 		key       string

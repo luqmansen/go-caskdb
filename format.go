@@ -7,7 +7,7 @@ import (
 const headerLength = 12
 
 func encodeHeader(timestamp uint32, keySize uint32, valueSize uint32) []byte {
-	// | timestamp 4B | keySize 4B | valueSize 4B | -> total allocate 12 Byte
+	// | Timestamp 4B | keySize 4B | valueSize 4B | -> total allocate 12 Byte
 	b := make([]byte, 12)
 	binary.LittleEndian.PutUint32(b[0:], timestamp)
 	binary.LittleEndian.PutUint32(b[4:], keySize)
