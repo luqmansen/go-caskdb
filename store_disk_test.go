@@ -2,13 +2,14 @@ package go_caskdb
 
 import (
 	"fmt"
-	"github.com/google/uuid"
-	log "github.com/sirupsen/logrus"
-	"github.com/stretchr/testify/assert"
 	"os"
 	"strconv"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
 )
 
 func init() {
@@ -137,6 +138,21 @@ func TestDiskStorage_concurrent(t *testing.T) {
 		}(k, v)
 	}
 	wgGet.Wait()
+}
+
+func TestDiskStorage_Delete(t *testing.T) {
+	store, _, cleanupFunc := initStorage()
+	defer cleanupFunc()
+
+	assert.Nil(t, store.Set("yeet", "yoot"))
+	val, _ := store.Get("yeet")
+	assert.Equal(t, "yoot", val)
+
+	store.Delete("yeet")
+
+	val, _ = store.Get("yeet")
+	assert.Equal(t, "", val)
+
 }
 
 func BenchmarkDiskStorage_Set(b *testing.B) {

@@ -5,8 +5,14 @@
 
 [Riak's Bitcask paper](https://riak.com/assets/bitcask-intro.pdf) implementation in Golang
 
-Todo
+## Todo
 
-- Cap db file size
-- Implement log compaction
-- Add support for ranged query
+- [x] Implement key deletion
+- [ ] Implement CRC
+- [ ] Cap db file size
+- [ ] Implement log compaction
+- [ ] Add support for ranged query
+
+## Credits
+
+This repo is inspired by [py-caskdb](https://github.com/avinassh/py-caskdb/)
