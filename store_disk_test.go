@@ -1,4 +1,4 @@
-package go_caskdb
+package caskdb
 
 import (
 	"fmt"
@@ -31,18 +31,18 @@ func Test_initKeyDir_useHintFiles(t *testing.T) {
 	store, filename, cleanupFunc := initStorage()
 	defer cleanupFunc()
 
-	kv := make(map[string]string)
+	kv := make(map[string][]byte)
 	for i := 0; i <= 10; i++ {
-		kv[strconv.Itoa(i)] = strconv.Itoa(i)
+		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	for k, v := range kv {
-		assert.Nil(t, store.Set(k, v))
+		assert.Nil(t, store.Set([]byte(k), []byte(v)))
 	}
 	assert.Nil(t, store.Close())
 
 	store = NewDiskStorage(filename)
 	for k, v := range kv {
-		res, err := store.Get(k)
+		res, err := store.Get([]byte(k))
 		assert.Nil(t, err)
 		assert.Equal(t, v, res)
 	}
@@ -54,17 +54,17 @@ func Test_initKeyDir(t *testing.T) {
 	store, filename, cleanupFunc := initStorage()
 	defer cleanupFunc()
 
-	kv := make(map[string]string)
+	kv := make(map[string][]byte)
 	for i := 0; i <= 10; i++ {
-		kv[strconv.Itoa(i)] = strconv.Itoa(i)
+		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	for k, v := range kv {
-		assert.Nil(t, store.Set(k, v))
+		assert.Nil(t, store.Set([]byte(k), v))
 	}
 
 	store = NewDiskStorage(filename)
 	for k, v := range kv {
-		res, err := store.Get(k)
+		res, err := store.Get([]byte(k))
 		assert.Nil(t, err)
 		assert.Equal(t, v, res)
 	}
@@ -76,10 +76,10 @@ func TestDiskStorage_singleKey(t *testing.T) {
 	store, _, cleanupFunc := initStorage()
 	defer cleanupFunc()
 
-	assert.Nil(t, store.Set("yeet", "donjon"))
-	res, err := store.Get("yeet")
+	assert.Nil(t, store.Set([]byte("yeet"), []byte("donjon")))
+	res, err := store.Get([]byte("yeet"))
 	assert.Nil(t, err)
-	assert.Equal(t, "donjon", res)
+	assert.Equal(t, []byte("donjon"), res)
 }
 
 func TestDiskStorage_multiKey(t *testing.T) {
@@ -88,15 +88,15 @@ func TestDiskStorage_multiKey(t *testing.T) {
 	store, _, cleanupFunc := initStorage()
 	defer cleanupFunc()
 
-	kv := make(map[string]string)
+	kv := make(map[string][]byte)
 	for i := 0; i <= 1000; i++ {
-		kv[strconv.Itoa(i)] = strconv.Itoa(i)
+		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	for k, v := range kv {
-		assert.Nil(t, store.Set(k, v))
+		assert.Nil(t, store.Set([]byte(k), []byte(v)))
 	}
 	for k, v := range kv {
-		res, err := store.Get(k)
+		res, err := store.Get([]byte(k))
 		assert.Nil(t, err)
 		assert.Equal(t, v, res)
 	}
@@ -108,33 +108,33 @@ func TestDiskStorage_concurrent(t *testing.T) {
 	store, _, cleanupFunc := initStorage()
 	defer cleanupFunc()
 
-	kv := make(map[string]string)
+	kv := make(map[string][]byte)
 
 	for i := 0; i <= 5_000; i++ {
-		kv[strconv.Itoa(i)] = strconv.Itoa(i)
+		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	var wgAdd sync.WaitGroup
 	for k, v := range kv {
 		wgAdd.Add(1)
-		go func(k, v string) {
+		go func(k, v []byte) {
 			defer wgAdd.Done()
 
 			assert.Nil(t, store.Set(k, v))
 			res, err := store.Get(k)
 			assert.Nil(t, err)
 			assert.Equal(t, v, res)
-		}(k, v)
+		}([]byte(k), v)
 	}
 	wgAdd.Wait()
 
 	var wgGet sync.WaitGroup
 	for k, v := range kv {
 		wgGet.Add(1)
-		go func(k, v string) {
+		go func(k string, v []byte) {
 			defer wgGet.Done()
-			res, err := store.Get(k)
+			res, err := store.Get([]byte(k))
 			assert.Nil(t, err)
-			assert.Equal(t, v, res)
+			assert.Equal(t, []byte(v), res)
 		}(k, v)
 	}
 	wgGet.Wait()
@@ -144,14 +144,14 @@ func TestDiskStorage_Delete(t *testing.T) {
 	store, _, cleanupFunc := initStorage()
 	defer cleanupFunc()
 
-	assert.Nil(t, store.Set("yeet", "yoot"))
-	val, _ := store.Get("yeet")
-	assert.Equal(t, "yoot", val)
+	assert.Nil(t, store.Set([]byte("yeet"), []byte("yoot")))
+	val, _ := store.Get([]byte("yeet"))
+	assert.Equal(t, []byte("yoot"), val)
 
-	store.Delete("yeet")
+	store.Delete([]byte("yeet"))
 
-	val, _ = store.Get("yeet")
-	assert.Equal(t, "", val)
+	val, _ = store.Get([]byte("yeet"))
+	assert.Nil(t, val)
 
 }
 
@@ -160,7 +160,7 @@ func BenchmarkDiskStorage_Set(b *testing.B) {
 	defer cleanupFunc()
 
 	for i := 0; i < b.N; i++ {
-		store.Set(strconv.Itoa(i), strconv.Itoa(i))
+		store.Set([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i)))
 	}
 }
 
@@ -169,12 +169,12 @@ func BenchmarkDiskStorage_Get(b *testing.B) {
 	defer cleanupFunc()
 
 	for i := 0; i < 100_000; i++ {
-		store.Set(strconv.Itoa(i), strconv.Itoa(i))
+		store.Set([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i)))
 	}
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		store.Get(strconv.Itoa(i))
+		store.Get([]byte(strconv.Itoa(i)))
 	}
 }
 
@@ -184,7 +184,7 @@ func BenchmarkNewDiskStorage_from_scratch(b *testing.B) {
 	defer cleanupFunc()
 
 	for i := 0; i < 100_000; i++ {
-		store.Set(strconv.Itoa(i), strconv.Itoa(i))
+		store.Set([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i)))
 	}
 	b.ResetTimer()
 
@@ -199,7 +199,7 @@ func BenchmarkNewDiskStorage_from_hintFiles(b *testing.B) {
 	defer cleanupFunc()
 
 	for i := 0; i < 100_000; i++ {
-		store.Set(strconv.Itoa(i), strconv.Itoa(i))
+		store.Set([]byte(strconv.Itoa(i)), []byte(strconv.Itoa(i)))
 	}
 	store.Close()
 	b.ResetTimer()
