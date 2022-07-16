@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	hintFilesPrefix = "keydir"
+	hintFilesExtension = "hint"
 )
+
+var errRecordNotFound = errors.New("record not found")
 
 type keyDirEntry struct {
 	//Timestamp in unixnano
@@ -25,66 +27,67 @@ type keyDirEntry struct {
 	// how to use this to get current entry:
 	// data = currentOffset + DataLength
 	DataLength int64
-
-	// tombstone value, will mark current entry as delete, and on the next merging process
-	// this entry will be gone
-	isDeleted bool
 }
 
 type DiskStorage struct {
-	*sync.Mutex
-	file *os.File
+	*sync.RWMutex
 
-	currentOffset int64
+	activeFile string
 	// map the key with the offset position of the value
 	keyDir map[string]*keyDirEntry
+
+	file *datafile
 }
 
 func NewDiskStorage(filename string) *DiskStorage {
 	ds := &DiskStorage{
-		currentOffset: io.SeekStart,
-		Mutex:         &sync.Mutex{},
-		file:          getOrCreateFile(filename),
+		RWMutex:    &sync.RWMutex{},
+		file:       openDataFile(filename),
+		keyDir:     make(map[string]*keyDirEntry),
+		activeFile: filename,
 	}
 	ds.initKeyDir()
 	return ds
 }
 
 func (s *DiskStorage) Set(key, value []byte) error {
-	s.Lock()
-	defer s.Unlock()
-
 	data := newEntry(time.Now().UnixNano(), key, value)
 	dataSize, databyte := data.encode()
 
-	_, err := s.file.WriteAt(databyte, s.currentOffset)
+	_, offset, err := s.file.Write(databyte)
 	if err != nil {
 		return err
 	}
+
+	s.Lock()
+	defer s.Unlock()
 	s.keyDir[string(key)] = &keyDirEntry{
-		LocationOffset: s.currentOffset,
+		// offset represent current offset after this data is written
+		// thus, the location of current data should be subtracted by the
+		// size of current data
+		Timestamp:      time.Now().UnixNano(),
+		LocationOffset: offset - dataSize,
 		DataLength:     dataSize,
 	}
-	s.currentOffset += dataSize
+
 	return nil
 }
 
 func (s *DiskStorage) Get(key []byte) ([]byte, error) {
-	s.Lock()
-	defer s.Unlock()
-
-	if val, found := s.keyDir[string(key)]; !found || val.isDeleted {
-		return nil, nil
+	s.RLock()
+	defer s.RUnlock()
+	keyData, found := s.keyDir[string(key)]
+	if !found {
+		return nil, errRecordNotFound
 	}
 
-	keyData := s.keyDir[string(key)]
 	data := make([]byte, keyData.DataLength)
 	_, err := s.file.ReadAt(data, keyData.LocationOffset)
 	if err != nil {
 		return nil, err
 	}
 
-	dataEntry := decodeKV(data)
+	dataEntry := decodeEntry(data)
 
 	return dataEntry.value, nil
 }
@@ -92,29 +95,23 @@ func (s *DiskStorage) Get(key []byte) ([]byte, error) {
 //Delete will only add "tombstone" value to entry, deletion on disk
 //will be performed when there is a merging process
 func (s *DiskStorage) Delete(key []byte) {
-	s.Lock()
-	defer s.Unlock()
-
-	if v, found := s.keyDir[string(key)]; found {
-		v.isDeleted = true
-	}
+	panic("implement me!")
 }
 
 func (s *DiskStorage) initKeyDir() {
-	hintFiles := fmt.Sprintf("%s_%s", s.file.Name(), hintFilesPrefix)
+	hintFiles := fmt.Sprintf("%s.%s", s.file.Name(), hintFilesExtension)
 	b, err := ioutil.ReadFile(hintFiles)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		panic(err)
 	}
 
-	keyDir := make(map[string]*keyDirEntry)
 	// hint files does not exist, will load key from entire db file one-by-one
 	if errors.Is(err, os.ErrNotExist) {
 		header := make([]byte, defaultHeaderLength)
-
 		var currOffset int64
+
 		for {
-			_, err := s.file.Read(header)
+			headerOffset, err := s.file.ReadAt(header, currOffset)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -126,19 +123,19 @@ func (s *DiskStorage) initKeyDir() {
 			headerData := decodeHeader(header)
 
 			key := make([]byte, headerData.keySize)
-			_, err = s.file.Read(key)
+			keyOffset, err := s.file.ReadAt(key, currOffset+int64(headerOffset))
 			if err != nil {
 				panic(err)
 			}
 
 			value := make([]byte, headerData.valueSize)
-			_, err = s.file.Read(value)
+			_, err = s.file.ReadAt(value, currOffset+int64(headerOffset+keyOffset))
 			if err != nil {
 				panic(err)
 			}
 
 			totalSize := defaultHeaderLength + headerData.keySize + headerData.valueSize
-			keyDir[string(key)] = &keyDirEntry{
+			s.keyDir[string(key)] = &keyDirEntry{
 				Timestamp:      headerData.timestamp,
 				LocationOffset: currOffset,
 				DataLength:     int64(totalSize),
@@ -146,34 +143,17 @@ func (s *DiskStorage) initKeyDir() {
 
 			currOffset += int64(totalSize)
 		}
+
 	} else {
 		// hint files exist, will load key that
 		buff := bytes.NewBuffer(b)
 		d := gob.NewDecoder(buff)
 
-		err = d.Decode(&keyDir)
+		err = d.Decode(&s.keyDir)
 		if err != nil {
 			panic(err)
 		}
 	}
-	s.keyDir = keyDir
-}
-
-func getOrCreateFile(filename string) *os.File {
-	var f *os.File
-	if _, err := os.Stat(filename); errors.Is(err, os.ErrNotExist) {
-		f, err = os.Create(filename)
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		f, err = os.Open(filename)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	return f
 }
 
 func (s DiskStorage) Close() error {
@@ -181,12 +161,9 @@ func (s DiskStorage) Close() error {
 }
 
 func (s *DiskStorage) flush() error {
-	s.Lock()
-	defer s.Unlock()
-
 	// flush key dir to hint files
-	filename := fmt.Sprintf("%s_%s", s.file.Name(), hintFilesPrefix)
-	f := getOrCreateFile(filename)
+	filename := fmt.Sprintf("%s.%s", s.activeFile, hintFilesExtension)
+	f := openDataFile(filename)
 
 	b := new(bytes.Buffer)
 	e := gob.NewEncoder(b)
@@ -194,6 +171,6 @@ func (s *DiskStorage) flush() error {
 	if err != nil {
 		panic(err)
 	}
-	_, err = f.Write(b.Bytes())
+	_, _, err = f.Write(b.Bytes())
 	return err
 }

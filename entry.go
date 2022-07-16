@@ -12,6 +12,7 @@ func newEntry(timestamp int64, key, value []byte) *entry {
 		keySize:   uint64(len(key)),
 		valueSize: uint64(len(value)),
 	}
+
 	return &entry{
 		header: header,
 		key:    key,
@@ -21,18 +22,17 @@ func newEntry(timestamp int64, key, value []byte) *entry {
 
 func (e *entry) encode() (int64, []byte) {
 	headerByte := e.header.encode()
-	length := len(headerByte) + len(e.key) + len(e.value)
+	length := len(headerByte) + len(e.key) + len(e.value) // length of this entry
 	data := make([]byte, length)
 
 	copy(data[:len(headerByte)], headerByte)
 	copy(data[len(headerByte):], e.key)
 	copy(data[len(headerByte)+len(e.key):], e.value)
 
-	// length will represent new offset
 	return int64(length), data
 }
 
-func decodeKV(data []byte) entry {
+func decodeEntry(data []byte) entry {
 	header := data[0:defaultHeaderLength]
 	h := decodeHeader(header)
 

@@ -46,7 +46,7 @@ func Test_encodeKV(t *testing.T) {
 			dataLength, data := e.encode()
 			assert.Equal(t, tt.want, dataLength)
 
-			decoded := decodeKV(data)
+			decoded := decodeEntry(data)
 			assert.Equal(t, tt.args.timestamp, decoded.header.timestamp)
 			assert.Equal(t, tt.args.key, decoded.key)
 			assert.Equal(t, tt.args.value, decoded.value)

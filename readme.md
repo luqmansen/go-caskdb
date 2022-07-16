@@ -7,11 +7,23 @@
 
 ## Todo
 
-- [x] Implement key deletion
+- [ ] Implement key deletion
 - [ ] Implement CRC
-- [ ] Cap db file size
-- [ ] Implement log compaction
+- [ ] Implement Max file size
+- [ ] Implement Log Merging
+  - [ ] Implement merge trigger
+    - [ ] Fragmentation
+    - [ ] Dead bytes
+  - [ ] Implement merge interval
 - [ ] Add support for ranged query
+
+## Benchmark
+
+| Ops                             | Result                                                      |
+|---------------------------------|-------------------------------------------------------------|
+| Unbuffered Write                | `BenchmarkDiskStorage_Set-8   	  651841	      1737 ns/op`
+| Buffered Write                  | `BenchmarkDiskStorage_Set-8   	 2569089	       501.8 ns/op` |
+| Buffered Write + Sync after set | `BenchmarkDiskStorage_Set-8   	    7879	    313756 ns/op`
 
 ## Credits
 

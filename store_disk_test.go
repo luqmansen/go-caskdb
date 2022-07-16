@@ -8,19 +8,22 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	log "github.com/sirupsen/logrus"
+
 	"github.com/stretchr/testify/assert"
 )
 
-func init() {
-	log.SetLevel(log.ErrorLevel)
-}
+func initStorageHelper(name ...string) (*DiskStorage, string, func()) {
+	filename := ""
+	if len(name) > 0 {
+		filename = name[0]
+	} else {
+		filename = uuid.NewString()
+	}
+	filename = "testdata/" + filename
 
-func initStorage() (*DiskStorage, string, func()) {
-	filename := uuid.NewString()
 	cleanup := func() {
 		os.Remove(filename)
-		os.Remove(fmt.Sprintf("%s_%s", filename, hintFilesPrefix))
+		os.Remove(fmt.Sprintf("%s.%s", filename, hintFilesExtension))
 	}
 	return NewDiskStorage(filename), filename, cleanup
 }
@@ -28,7 +31,7 @@ func initStorage() (*DiskStorage, string, func()) {
 func Test_initKeyDir_useHintFiles(t *testing.T) {
 	t.Parallel()
 
-	store, filename, cleanupFunc := initStorage()
+	store, filename, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	kv := make(map[string][]byte)
@@ -36,7 +39,7 @@ func Test_initKeyDir_useHintFiles(t *testing.T) {
 		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	for k, v := range kv {
-		assert.Nil(t, store.Set([]byte(k), []byte(v)))
+		assert.Nil(t, store.Set([]byte(k), v))
 	}
 	assert.Nil(t, store.Close())
 
@@ -51,7 +54,7 @@ func Test_initKeyDir_useHintFiles(t *testing.T) {
 func Test_initKeyDir(t *testing.T) {
 	t.Parallel()
 
-	store, filename, cleanupFunc := initStorage()
+	store, filename, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	kv := make(map[string][]byte)
@@ -73,7 +76,7 @@ func Test_initKeyDir(t *testing.T) {
 func TestDiskStorage_singleKey(t *testing.T) {
 	t.Parallel()
 
-	store, _, cleanupFunc := initStorage()
+	store, _, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	assert.Nil(t, store.Set([]byte("yeet"), []byte("donjon")))
@@ -85,11 +88,11 @@ func TestDiskStorage_singleKey(t *testing.T) {
 func TestDiskStorage_multiKey(t *testing.T) {
 	t.Parallel()
 
-	store, _, cleanupFunc := initStorage()
+	store, _, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	kv := make(map[string][]byte)
-	for i := 0; i <= 1000; i++ {
+	for i := 0; i <= 1_00_000; i++ {
 		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	for k, v := range kv {
@@ -105,12 +108,12 @@ func TestDiskStorage_multiKey(t *testing.T) {
 func TestDiskStorage_concurrent(t *testing.T) {
 	t.Parallel()
 
-	store, _, cleanupFunc := initStorage()
+	store, _, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	kv := make(map[string][]byte)
 
-	for i := 0; i <= 5_000; i++ {
+	for i := 0; i <= 1000; i++ {
 		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	var wgAdd sync.WaitGroup
@@ -118,8 +121,7 @@ func TestDiskStorage_concurrent(t *testing.T) {
 		wgAdd.Add(1)
 		go func(k, v []byte) {
 			defer wgAdd.Done()
-
-			assert.Nil(t, store.Set(k, v))
+			assert.NoError(t, store.Set(k, v))
 			res, err := store.Get(k)
 			assert.Nil(t, err)
 			assert.Equal(t, v, res)
@@ -132,31 +134,17 @@ func TestDiskStorage_concurrent(t *testing.T) {
 		wgGet.Add(1)
 		go func(k string, v []byte) {
 			defer wgGet.Done()
+			fmt.Println(k)
 			res, err := store.Get([]byte(k))
 			assert.Nil(t, err)
-			assert.Equal(t, []byte(v), res)
+			assert.Equal(t, v, res)
 		}(k, v)
 	}
 	wgGet.Wait()
 }
 
-func TestDiskStorage_Delete(t *testing.T) {
-	store, _, cleanupFunc := initStorage()
-	defer cleanupFunc()
-
-	assert.Nil(t, store.Set([]byte("yeet"), []byte("yoot")))
-	val, _ := store.Get([]byte("yeet"))
-	assert.Equal(t, []byte("yoot"), val)
-
-	store.Delete([]byte("yeet"))
-
-	val, _ = store.Get([]byte("yeet"))
-	assert.Nil(t, val)
-
-}
-
 func BenchmarkDiskStorage_Set(b *testing.B) {
-	store, _, cleanupFunc := initStorage()
+	store, _, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	for i := 0; i < b.N; i++ {
@@ -165,7 +153,7 @@ func BenchmarkDiskStorage_Set(b *testing.B) {
 }
 
 func BenchmarkDiskStorage_Get(b *testing.B) {
-	store, _, cleanupFunc := initStorage()
+	store, _, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	for i := 0; i < 100_000; i++ {
@@ -180,7 +168,7 @@ func BenchmarkDiskStorage_Get(b *testing.B) {
 
 // load all key dir value from reading the database file
 func BenchmarkNewDiskStorage_from_scratch(b *testing.B) {
-	store, filename, cleanupFunc := initStorage()
+	store, filename, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	for i := 0; i < 100_000; i++ {
@@ -195,7 +183,7 @@ func BenchmarkNewDiskStorage_from_scratch(b *testing.B) {
 
 // load all key dir value from hint files
 func BenchmarkNewDiskStorage_from_hintFiles(b *testing.B) {
-	store, filename, cleanupFunc := initStorage()
+	store, filename, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()
 
 	for i := 0; i < 100_000; i++ {
