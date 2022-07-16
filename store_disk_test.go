@@ -2,6 +2,7 @@ package caskdb
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"sync"
@@ -88,15 +89,15 @@ func TestDiskStorage_singleKey(t *testing.T) {
 func TestDiskStorage_multiKey(t *testing.T) {
 	t.Parallel()
 
-	store, _, cleanupFunc := initStorageHelper()
-	defer cleanupFunc()
+	store, _, _ := initStorageHelper()
+	//defer cleanupFunc()
 
 	kv := make(map[string][]byte)
-	for i := 0; i <= 1_00_000; i++ {
+	for i := 0; i <= 10_000_000; i++ {
 		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	for k, v := range kv {
-		assert.Nil(t, store.Set([]byte(k), []byte(v)))
+		assert.Nil(t, store.Set([]byte(k), v))
 	}
 	for k, v := range kv {
 		res, err := store.Get([]byte(k))
@@ -194,4 +195,33 @@ func BenchmarkNewDiskStorage_from_hintFiles(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		NewDiskStorage(filename)
 	}
+}
+
+func TestName(t *testing.T) {
+	size := int64(1 * 1024 * 1024)
+	fd, err := os.Create("output")
+	if err != nil {
+		log.Fatal("Failed to create output")
+	}
+	_, err = fd.Seek(size-1, 0)
+	if err != nil {
+		log.Fatal("Failed to seek")
+	}
+	_, err = fd.Write([]byte{0})
+	if err != nil {
+		log.Fatal("Write failed")
+	}
+
+	st, err := fd.Stat()
+	if err != nil {
+		panic(err)
+	}
+	t.Log(st.Size())
+	t.Log(st.Size() >= 1*1024*1024)
+
+	err = fd.Close()
+	if err != nil {
+		log.Fatal("Failed to close file")
+	}
+
 }

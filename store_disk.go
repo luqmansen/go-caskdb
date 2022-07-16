@@ -44,6 +44,10 @@ type DiskStorage struct {
 	files []*datafile
 }
 
+func (s *DiskStorage) currentFiles() *datafile {
+	return s.files[len(s.files)-1]
+}
+
 func NewDiskStorage(filename string) *DiskStorage {
 	files := make([]*datafile, 1)
 	files[0] = openDataFile(fmt.Sprintf("%s_%d", filename, 0))
@@ -62,7 +66,13 @@ func (s *DiskStorage) Set(key, value []byte) error {
 	data := newEntry(time.Now().UnixNano(), key, value)
 	dataSize, databyte := data.encode()
 
-	_, offset, err := s.files[len(s.files)-1].Write(databyte)
+	files := s.currentFiles()
+	fmt.Println(files.Size())
+	if files.Size() >= 1*1024*1024 { // 1 MB
+		files = openDataFile(fmt.Sprintf("%s_%d", s.dbFileFullPath, len(s.files)))
+		s.files = append(s.files, files)
+	}
+	_, offset, err := files.Write(databyte)
 	if err != nil {
 		return err
 	}
@@ -73,6 +83,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 		// offset represent current offset after this data is written
 		// thus, the location of current data should be subtracted by the
 		// size of current data
+		FileID:         len(s.files) - 1,
 		Timestamp:      time.Now().UnixNano(),
 		LocationOffset: offset - dataSize,
 		DataLength:     dataSize,
@@ -90,7 +101,7 @@ func (s *DiskStorage) Get(key []byte) ([]byte, error) {
 	}
 
 	data := make([]byte, keyData.DataLength)
-	_, err := s.files[len(s.files)-1].ReadAt(data, keyData.LocationOffset)
+	_, err := s.files[keyData.FileID].ReadAt(data, keyData.LocationOffset)
 	if err != nil {
 		return nil, err
 	}

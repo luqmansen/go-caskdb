@@ -11,7 +11,6 @@ type datafile struct {
 	file   *os.File
 	offset int64
 	sync.Mutex
-	os.FileInfo
 }
 
 // openDataFile will open data files if exists, else
@@ -22,20 +21,24 @@ func openDataFile(name string) *datafile {
 		panic(err)
 	}
 
-	f, _ := os.Stat(name)
-
 	return &datafile{
-		fileID:   name,
-		file:     rw,
-		Mutex:    sync.Mutex{},
-		offset:   io.SeekStart,
-		FileInfo: f,
+		fileID: name,
+		file:   rw,
+		Mutex:  sync.Mutex{},
+		offset: io.SeekStart,
 	}
+}
+
+func (d *datafile) Size() int64 {
+	stat, _ := d.file.Stat()
+	return stat.Size()
 }
 
 func (d *datafile) Write(p []byte) (n int, offset int64, err error) {
 	d.Lock()
 	defer d.Unlock()
+
+	d.Size()
 
 	n, err = d.file.Write(p)
 	d.offset += int64(n)
