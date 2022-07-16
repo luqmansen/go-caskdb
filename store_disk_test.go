@@ -134,7 +134,6 @@ func TestDiskStorage_concurrent(t *testing.T) {
 		wgGet.Add(1)
 		go func(k string, v []byte) {
 			defer wgGet.Done()
-			fmt.Println(k)
 			res, err := store.Get([]byte(k))
 			assert.Nil(t, err)
 			assert.Equal(t, v, res)
@@ -166,7 +165,7 @@ func BenchmarkDiskStorage_Get(b *testing.B) {
 	}
 }
 
-// load all key dir value from reading the database file
+// load all key dir value from reading the database files
 func BenchmarkNewDiskStorage_from_scratch(b *testing.B) {
 	store, filename, cleanupFunc := initStorageHelper()
 	defer cleanupFunc()

@@ -8,6 +8,8 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,9 +21,12 @@ const (
 var errRecordNotFound = errors.New("record not found")
 
 type keyDirEntry struct {
+	//FileID indicate which files is this entry stored, because there
+	//could be multiple files
+	FileID int
 	//Timestamp in unixnano
 	Timestamp int64
-	//LocationOffset is the file offset of current entry from initial position (0)
+	//LocationOffset is the files offset of current entry from initial position (0)
 	LocationOffset int64
 	// DataLength is the length of bytes of current entry only,
 	// how to use this to get current entry:
@@ -32,19 +37,22 @@ type keyDirEntry struct {
 type DiskStorage struct {
 	*sync.RWMutex
 
-	activeFile string
+	dbFileFullPath string
 	// map the key with the offset position of the value
 	keyDir map[string]*keyDirEntry
 
-	file *datafile
+	files []*datafile
 }
 
 func NewDiskStorage(filename string) *DiskStorage {
+	files := make([]*datafile, 1)
+	files[0] = openDataFile(fmt.Sprintf("%s_%d", filename, 0))
+
 	ds := &DiskStorage{
-		RWMutex:    &sync.RWMutex{},
-		file:       openDataFile(filename),
-		keyDir:     make(map[string]*keyDirEntry),
-		activeFile: filename,
+		RWMutex:        &sync.RWMutex{},
+		files:          files,
+		keyDir:         make(map[string]*keyDirEntry),
+		dbFileFullPath: filename,
 	}
 	ds.initKeyDir()
 	return ds
@@ -54,7 +62,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 	data := newEntry(time.Now().UnixNano(), key, value)
 	dataSize, databyte := data.encode()
 
-	_, offset, err := s.file.Write(databyte)
+	_, offset, err := s.files[len(s.files)-1].Write(databyte)
 	if err != nil {
 		return err
 	}
@@ -82,7 +90,7 @@ func (s *DiskStorage) Get(key []byte) ([]byte, error) {
 	}
 
 	data := make([]byte, keyData.DataLength)
-	_, err := s.file.ReadAt(data, keyData.LocationOffset)
+	_, err := s.files[len(s.files)-1].ReadAt(data, keyData.LocationOffset)
 	if err != nil {
 		return nil, err
 	}
@@ -99,52 +107,14 @@ func (s *DiskStorage) Delete(key []byte) {
 }
 
 func (s *DiskStorage) initKeyDir() {
-	hintFiles := fmt.Sprintf("%s.%s", s.file.Name(), hintFilesExtension)
+	hintFiles := fmt.Sprintf("%s.%s", s.dbFileFullPath, hintFilesExtension)
 	b, err := ioutil.ReadFile(hintFiles)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		panic(err)
 	}
 
-	// hint files does not exist, will load key from entire db file one-by-one
-	if errors.Is(err, os.ErrNotExist) {
-		header := make([]byte, defaultHeaderLength)
-		var currOffset int64
-
-		for {
-			headerOffset, err := s.file.ReadAt(header, currOffset)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				} else {
-					panic(err)
-				}
-			}
-
-			headerData := decodeHeader(header)
-
-			key := make([]byte, headerData.keySize)
-			keyOffset, err := s.file.ReadAt(key, currOffset+int64(headerOffset))
-			if err != nil {
-				panic(err)
-			}
-
-			value := make([]byte, headerData.valueSize)
-			_, err = s.file.ReadAt(value, currOffset+int64(headerOffset+keyOffset))
-			if err != nil {
-				panic(err)
-			}
-
-			totalSize := defaultHeaderLength + headerData.keySize + headerData.valueSize
-			s.keyDir[string(key)] = &keyDirEntry{
-				Timestamp:      headerData.timestamp,
-				LocationOffset: currOffset,
-				DataLength:     int64(totalSize),
-			}
-
-			currOffset += int64(totalSize)
-		}
-
-	} else {
+	// hint files does not exist, will load key from entire db files one-by-one
+	if !errors.Is(err, os.ErrNotExist) {
 		// hint files exist, will load key that
 		buff := bytes.NewBuffer(b)
 		d := gob.NewDecoder(buff)
@@ -153,6 +123,71 @@ func (s *DiskStorage) initKeyDir() {
 		if err != nil {
 			panic(err)
 		}
+
+	} else if errors.Is(err, os.ErrNotExist) {
+		parentPath := strings.Split(s.dbFileFullPath, "/")[0]
+		dirs, err := os.ReadDir(parentPath)
+		if err != nil {
+			panic(err)
+		}
+		filePath := strings.Split(s.dbFileFullPath, "/")
+		dbFileList := make([]string, 0)
+
+		for _, dir := range dirs {
+			currFilePath := fmt.Sprintf("%s/%s", parentPath, dir.Name())
+			if !strings.Contains(currFilePath, filePath[len(filePath)-1]) {
+				continue
+			}
+			dbFileList = append(dbFileList, currFilePath)
+		}
+		sort.Slice(dbFileList, func(i, j int) bool { return dbFileList[i] > dbFileList[j] })
+
+		for idx, dbFile := range dbFileList {
+			files := openDataFile(dbFile)
+			header := make([]byte, defaultHeaderLength)
+			var currOffset int64
+
+			for {
+				headerOffset, err := files.ReadAt(header, currOffset)
+				if err != nil {
+					if errors.Is(err, io.EOF) {
+						break
+					} else {
+						panic(err)
+					}
+				}
+
+				headerData := decodeHeader(header)
+
+				key := make([]byte, headerData.keySize)
+				keyOffset, err := files.ReadAt(key, currOffset+int64(headerOffset))
+				if err != nil {
+					panic(err)
+				}
+
+				value := make([]byte, headerData.valueSize)
+				_, err = files.ReadAt(value, currOffset+int64(headerOffset+keyOffset))
+				if err != nil {
+					panic(err)
+				}
+
+				totalSize := defaultHeaderLength + headerData.keySize + headerData.valueSize
+
+				if _, exists := s.keyDir[string(key)]; !exists {
+					s.keyDir[string(key)] = &keyDirEntry{
+						FileID:         idx,
+						Timestamp:      headerData.timestamp,
+						LocationOffset: currOffset,
+						DataLength:     int64(totalSize),
+					}
+					s.files[idx] = files
+				}
+
+				currOffset += int64(totalSize)
+			}
+
+		}
+
 	}
 }
 
@@ -162,7 +197,7 @@ func (s DiskStorage) Close() error {
 
 func (s *DiskStorage) flush() error {
 	// flush key dir to hint files
-	filename := fmt.Sprintf("%s.%s", s.activeFile, hintFilesExtension)
+	filename := fmt.Sprintf("%s.%s", s.dbFileFullPath, hintFilesExtension)
 	f := openDataFile(filename)
 
 	b := new(bytes.Buffer)
