@@ -7,7 +7,7 @@ test:
 	rm -rf ./testdata/*
 	rm -f coverage.out coverage.out.tmp
 	go clean -testcache
-	go test ./... -race -failfast -coverprofile coverage.out -covermode=atomic
+	go test ./... -v -race -failfast -coverprofile coverage.out -covermode=atomic
 	go tool cover -func coverage.out
 
 

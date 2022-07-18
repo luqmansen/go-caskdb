@@ -3,6 +3,7 @@ package caskdb
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,15 +50,28 @@ type DiskStorage struct {
 	logger *zap.Logger
 }
 
-func (s *DiskStorage) currentFiles() *datafile {
-	return s.files[len(s.files)-1]
-}
-
 func NewDiskStorage(filename string) *DiskStorage {
 	files := make([]*datafile, 1)
 	files[0] = openDataFile(fmt.Sprintf("%s_%d", filename, 0))
 
-	logger, err := zap.NewProduction()
+	// todo: move this outside this function
+	rawJSON := []byte(`{
+   "level": "error",
+   "encoding": "json",
+   "outputPaths": ["stdout"],
+   "errorOutputPaths": ["stderr"],
+   "encoderConfig": {
+     "messageKey": "message",
+     "levelKey": "level",
+     "levelEncoder": "lowercase"
+   }
+ }`)
+
+	var cfg zap.Config
+	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
+		panic(err)
+	}
+	logger, err := cfg.Build()
 	if err != nil {
 		panic(err)
 	}
@@ -77,12 +91,13 @@ func (s *DiskStorage) Set(key, value []byte) error {
 	data := newEntry(time.Now().UnixNano(), key, value)
 	dataSize, databyte := data.encode()
 
-	files := s.currentFiles()
-	if files.Size() >= 1*1024*1024 { // 1 MB //TODO: make this configurable
-		files = openDataFile(fmt.Sprintf("%s_%d", s.dbFileFullPath, len(s.files)))
-		s.files = append(s.files, files)
+	fileID, file := s.currentFiles()
+	if file.Size() >= 1*1024*1024 { // 1 MB //TODO: make this configurable
+		file = openDataFile(fmt.Sprintf("%s_%d", s.dbFileFullPath, fileID+1))
+		fileID = s.addNewDataFile(file)
 	}
-	_, offset, err := files.Write(databyte)
+
+	_, offset, err := file.Write(databyte)
 	if err != nil {
 		return err
 	}
@@ -93,7 +108,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 		// offset represent current offset after this data is written
 		// thus, the location of current data should be subtracted by the
 		// size of current data
-		FileID:         len(s.files) - 1,
+		FileID:         fileID,
 		Timestamp:      time.Now().UnixNano(),
 		LocationOffset: offset - dataSize,
 		DataLength:     dataSize,
@@ -212,7 +227,12 @@ func (s *DiskStorage) initKeyDir() {
 	}
 }
 
-func (s DiskStorage) Close() error {
+func (s *DiskStorage) Close() error {
+	for _, files := range s.files {
+		if err := files.Close(); err != nil {
+			return err
+		}
+	}
 	return s.flush()
 }
 
@@ -229,4 +249,24 @@ func (s *DiskStorage) flush() error {
 	}
 	_, _, err = f.Write(b.Bytes())
 	return err
+}
+
+// addNewDataFile will add new datafile to file list and return its file id
+func (s *DiskStorage) addNewDataFile(file *datafile) int {
+	s.Lock()
+	s.files = append(s.files, file)
+	id := len(s.files) - 1
+	s.Unlock()
+
+	return id
+}
+
+//currentFiles will get index of current active file and the file itself
+func (s *DiskStorage) currentFiles() (int, *datafile) {
+	s.RLock()
+	fileID := len(s.files) - 1
+	f := s.files[fileID]
+	s.RUnlock()
+
+	return fileID, f
 }

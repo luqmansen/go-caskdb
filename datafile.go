@@ -10,7 +10,7 @@ type datafile struct {
 	fileID string
 	file   *os.File
 	offset int64
-	sync.Mutex
+	sync.RWMutex
 }
 
 // openDataFile will open data files if exists, else
@@ -22,23 +22,28 @@ func openDataFile(name string) *datafile {
 	}
 
 	return &datafile{
-		fileID: name,
-		file:   rw,
-		Mutex:  sync.Mutex{},
-		offset: io.SeekStart,
+		fileID:  name,
+		file:    rw,
+		RWMutex: sync.RWMutex{},
+		offset:  io.SeekStart,
 	}
 }
 
+func (d *datafile) Close() error {
+	return d.file.Close()
+}
+
 func (d *datafile) Size() int64 {
+	d.RLock()
 	stat, _ := d.file.Stat()
+	d.RUnlock()
+
 	return stat.Size()
 }
 
 func (d *datafile) Write(p []byte) (n int, offset int64, err error) {
 	d.Lock()
 	defer d.Unlock()
-
-	d.Size()
 
 	n, err = d.file.Write(p)
 	d.offset += int64(n)
