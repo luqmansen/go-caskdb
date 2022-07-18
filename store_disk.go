@@ -8,10 +8,13 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -42,6 +45,8 @@ type DiskStorage struct {
 	keyDir map[string]*keyDirEntry
 
 	files []*datafile
+
+	logger *zap.Logger
 }
 
 func (s *DiskStorage) currentFiles() *datafile {
@@ -52,11 +57,17 @@ func NewDiskStorage(filename string) *DiskStorage {
 	files := make([]*datafile, 1)
 	files[0] = openDataFile(fmt.Sprintf("%s_%d", filename, 0))
 
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+
 	ds := &DiskStorage{
 		RWMutex:        &sync.RWMutex{},
 		files:          files,
 		keyDir:         make(map[string]*keyDirEntry),
 		dbFileFullPath: filename,
+		logger:         logger,
 	}
 	ds.initKeyDir()
 	return ds
@@ -67,8 +78,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 	dataSize, databyte := data.encode()
 
 	files := s.currentFiles()
-	fmt.Println(files.Size())
-	if files.Size() >= 1*1024*1024 { // 1 MB
+	if files.Size() >= 1*1024*1024 { // 1 MB //TODO: make this configurable
 		files = openDataFile(fmt.Sprintf("%s_%d", s.dbFileFullPath, len(s.files)))
 		s.files = append(s.files, files)
 	}
@@ -95,6 +105,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 func (s *DiskStorage) Get(key []byte) ([]byte, error) {
 	s.RLock()
 	defer s.RUnlock()
+
 	keyData, found := s.keyDir[string(key)]
 	if !found {
 		return nil, errRecordNotFound
@@ -103,6 +114,7 @@ func (s *DiskStorage) Get(key []byte) ([]byte, error) {
 	data := make([]byte, keyData.DataLength)
 	_, err := s.files[keyData.FileID].ReadAt(data, keyData.LocationOffset)
 	if err != nil {
+		s.logger.Error(err.Error(), zap.Any("key", keyData))
 		return nil, err
 	}
 
@@ -136,20 +148,18 @@ func (s *DiskStorage) initKeyDir() {
 		}
 
 	} else if errors.Is(err, os.ErrNotExist) {
-		parentPath := strings.Split(s.dbFileFullPath, "/")[0]
+		parentPath, file := path.Split(s.dbFileFullPath)
 		dirs, err := os.ReadDir(parentPath)
 		if err != nil {
 			panic(err)
 		}
-		filePath := strings.Split(s.dbFileFullPath, "/")
 		dbFileList := make([]string, 0)
 
 		for _, dir := range dirs {
-			currFilePath := fmt.Sprintf("%s/%s", parentPath, dir.Name())
-			if !strings.Contains(currFilePath, filePath[len(filePath)-1]) {
+			if !strings.Contains(dir.Name(), file) {
 				continue
 			}
-			dbFileList = append(dbFileList, currFilePath)
+			dbFileList = append(dbFileList, path.Join(parentPath, dir.Name()))
 		}
 		sort.Slice(dbFileList, func(i, j int) bool { return dbFileList[i] > dbFileList[j] })
 

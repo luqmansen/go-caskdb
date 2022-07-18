@@ -16,7 +16,7 @@ type datafile struct {
 // openDataFile will open data files if exists, else
 // it will create new one.
 func openDataFile(name string) *datafile {
-	rw, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0600) // write only
+	rw, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		panic(err)
 	}

@@ -1,9 +1,10 @@
 package caskdb
 
 import (
-	"fmt"
+	"errors"
 	"log"
 	"os"
+	"path"
 	"strconv"
 	"sync"
 	"testing"
@@ -15,16 +16,29 @@ import (
 
 func initStorageHelper(name ...string) (*DiskStorage, string, func()) {
 	filename := ""
-	if len(name) > 0 {
-		filename = name[0]
+	baseTestPath := "testdata"
+	testFolder := uuid.NewString() // each test will get its own folder
+
+	if len(name) >= 1 {
+		filename = path.Join(append([]string{baseTestPath}, name...)...)
 	} else {
-		filename = uuid.NewString()
+		filename = path.Join(baseTestPath, testFolder, uuid.NewString())
 	}
-	filename = "testdata/" + filename
+
+	testfilepath, _ := path.Split(filename)
+	if _, err := os.Stat(testfilepath); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(testfilepath, 0777); err != nil {
+			panic(err)
+		}
+	} else if err != nil {
+		panic(err)
+	}
 
 	cleanup := func() {
-		os.Remove(filename)
-		os.Remove(fmt.Sprintf("%s.%s", filename, hintFilesExtension))
+		err := os.RemoveAll(testfilepath)
+		if err != nil {
+			log.Println(err.Error())
+		}
 	}
 	return NewDiskStorage(filename), filename, cleanup
 }
@@ -89,21 +103,81 @@ func TestDiskStorage_singleKey(t *testing.T) {
 func TestDiskStorage_multiKey(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := initStorageHelper()
-	//defer cleanupFunc()
+	t.Run("test correct file split", func(t *testing.T) {
+		t.Parallel()
 
-	kv := make(map[string][]byte)
-	for i := 0; i <= 10_000_000; i++ {
-		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
-	}
-	for k, v := range kv {
-		assert.Nil(t, store.Set([]byte(k), v))
-	}
-	for k, v := range kv {
-		res, err := store.Get([]byte(k))
-		assert.Nil(t, err)
-		assert.Equal(t, v, res)
-	}
+		store, _, cleanupFunc := initStorageHelper("file_split", "test")
+		defer cleanupFunc()
+
+		kv := make(map[string][]byte)
+		// this will equal to 3.2 MB of record
+		// 1 key consist of 24b header +  2~5 byte of kv pair
+		// this should split into 4 files (3x 1MB + 1x ~200KB)
+		for i := 0; i <= 100_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
+		for k, v := range kv {
+			assert.Nil(t, store.Set([]byte(k), v))
+		}
+		for k, v := range kv {
+			res, err := store.Get([]byte(k))
+			assert.Nil(t, err)
+			assert.Equal(t, v, res)
+		}
+
+		dirs, err := os.ReadDir("testdata/file_split/")
+		if err != nil {
+			panic(err)
+		}
+		assert.Len(t, dirs, 4) // there should be exactly 4 files in here
+	})
+
+	t.Run("test one million key", func(t *testing.T) {
+		t.Parallel()
+
+		store, _, cleanupFunc := initStorageHelper()
+		defer cleanupFunc()
+
+		kv := make(map[string][]byte)
+		// this will equal to 3.2 MB of record
+		// 1 key consist of 24b header +  2~5 byte of kv pair
+		// this should split into 4 files (3x 1MB + 1x ~200KB)
+		for i := 0; i <= 1_000_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
+		for k, v := range kv {
+			assert.Nil(t, store.Set([]byte(k), v))
+		}
+		for k, v := range kv {
+			res, err := store.Get([]byte(k))
+			assert.Nil(t, err)
+			assert.Equal(t, v, res)
+		}
+	})
+
+	t.Run("test ten million key", func(t *testing.T) {
+		t.Parallel()
+
+		store, _, cleanupFunc := initStorageHelper()
+		defer cleanupFunc()
+
+		kv := make(map[string][]byte)
+		// this will equal to 3.2 MB of record
+		// 1 key consist of 24b header +  2~5 byte of kv pair
+		// this should split into 4 files (3x 1MB + 1x ~200KB)
+		for i := 0; i <= 10_000_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
+		for k, v := range kv {
+			assert.Nil(t, store.Set([]byte(k), v))
+		}
+		for k, v := range kv {
+			res, err := store.Get([]byte(k))
+			assert.Nil(t, err)
+			assert.Equal(t, v, res)
+		}
+	})
+
 }
 
 func TestDiskStorage_concurrent(t *testing.T) {
@@ -114,7 +188,8 @@ func TestDiskStorage_concurrent(t *testing.T) {
 
 	kv := make(map[string][]byte)
 
-	for i := 0; i <= 1000; i++ {
+	// TODO: this test is failed at 1 Million key
+	for i := 0; i <= 100_000; i++ {
 		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 	}
 	var wgAdd sync.WaitGroup
@@ -125,7 +200,7 @@ func TestDiskStorage_concurrent(t *testing.T) {
 			assert.NoError(t, store.Set(k, v))
 			res, err := store.Get(k)
 			assert.Nil(t, err)
-			assert.Equal(t, v, res)
+			equalByte(t, v, res)
 		}([]byte(k), v)
 	}
 	wgAdd.Wait()
@@ -197,31 +272,6 @@ func BenchmarkNewDiskStorage_from_hintFiles(b *testing.B) {
 	}
 }
 
-func TestName(t *testing.T) {
-	size := int64(1 * 1024 * 1024)
-	fd, err := os.Create("output")
-	if err != nil {
-		log.Fatal("Failed to create output")
-	}
-	_, err = fd.Seek(size-1, 0)
-	if err != nil {
-		log.Fatal("Failed to seek")
-	}
-	_, err = fd.Write([]byte{0})
-	if err != nil {
-		log.Fatal("Write failed")
-	}
-
-	st, err := fd.Stat()
-	if err != nil {
-		panic(err)
-	}
-	t.Log(st.Size())
-	t.Log(st.Size() >= 1*1024*1024)
-
-	err = fd.Close()
-	if err != nil {
-		log.Fatal("Failed to close file")
-	}
-
+func equalByte(t *testing.T, expected, actual []byte) {
+	assert.Equal(t, string(expected), string(actual))
 }
