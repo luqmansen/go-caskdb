@@ -46,6 +46,8 @@ type DiskStorage struct {
 	keyDir map[string]*keyDirEntry
 
 	files []*datafile
+	//maxFileSize is maximum size of single log file. size in bytes
+	maxFileSize int64
 
 	logger *zap.Logger
 }
@@ -82,9 +84,18 @@ func NewDiskStorage(filename string) *DiskStorage {
 		keyDir:         make(map[string]*keyDirEntry),
 		dbFileFullPath: filename,
 		logger:         logger,
+		maxFileSize:    100 * 1024 * 1024, // default size 100MB
 	}
+
 	ds.initKeyDir()
+
 	return ds
+}
+
+func (s *DiskStorage) WithOptions(options *Options) {
+	if options.maxFileSize != 0 {
+		s.maxFileSize = options.maxFileSize
+	}
 }
 
 func (s *DiskStorage) Set(key, value []byte) error {
@@ -92,7 +103,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 	dataSize, databyte := data.encode()
 
 	fileID, file := s.currentFiles()
-	if file.Size() >= 1*1024*1024 { // 1 MB //TODO: make this configurable
+	if file.Size() >= s.maxFileSize {
 		file = openDataFile(fmt.Sprintf("%s_%d", s.dbFileFullPath, fileID+1))
 		fileID = s.addNewDataFile(file)
 	}

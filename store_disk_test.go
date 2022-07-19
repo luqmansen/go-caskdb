@@ -16,11 +16,11 @@ import (
 
 func initStorageHelper(name ...string) (*DiskStorage, string, func()) {
 	filename := ""
-	baseTestPath := "testdata"
+	baseTestPath := "testdata"     // location for test file, so we don't clutter root project
 	testFolder := uuid.NewString() // each test will get its own folder
 
 	if len(name) >= 1 {
-		filename = path.Join(append([]string{baseTestPath}, name...)...)
+		filename = path.Join(append([]string{baseTestPath, testFolder}, name...)...)
 	} else {
 		filename = path.Join(baseTestPath, testFolder, uuid.NewString())
 	}
@@ -42,7 +42,7 @@ func initStorageHelper(name ...string) (*DiskStorage, string, func()) {
 			log.Println(err.Error())
 		}
 
-		err = os.RemoveAll(testfilepath)
+		err = os.RemoveAll(path.Join(baseTestPath, testFolder))
 		if err != nil {
 			log.Println(err.Error())
 		}
@@ -112,9 +112,11 @@ func TestDiskStorage_multiKey(t *testing.T) {
 
 	t.Run("test correct file split", func(t *testing.T) {
 		t.Parallel()
-		subPathName := "file_split_" + uuid.NewString()
-		store, filePath, cleanupFunc := initStorageHelper(subPathName, "test")
+
+		store, filePath, cleanupFunc := initStorageHelper(t.Name(), "test")
 		defer cleanupFunc()
+
+		store.WithOptions(NewOptions().SetMaxFileSize("1MB"))
 
 		kv := make(map[string][]byte)
 		// this will equal to 3.2 MB of record
@@ -142,11 +144,13 @@ func TestDiskStorage_multiKey(t *testing.T) {
 	t.Run("test one million key", func(t *testing.T) {
 		t.Parallel()
 
-		store, _, cleanupFunc := initStorageHelper()
+		store, filePath, cleanupFunc := initStorageHelper(t.Name(), "test")
 		defer cleanupFunc()
 
+		store.WithOptions(NewOptions().SetMaxFileSize("20MB"))
+
 		kv := make(map[string][]byte)
-		for i := 0; i <= 1_000_000; i++ {
+		for i := 0; i <= 1_000_000; i++ { // this will roughly generate 34MB files
 			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 		}
 		for k, v := range kv {
@@ -157,82 +161,211 @@ func TestDiskStorage_multiKey(t *testing.T) {
 			assert.Nil(t, err)
 			assert.Equal(t, v, res)
 		}
-	})
 
-	// TODO: uncomment when we have configurable file size limit
-	//t.Run("test ten million key", func(t *testing.T) {
-	//	t.Parallel()
-	//
-	//	store, _, cleanupFunc := initStorageHelper()
-	//	defer cleanupFunc()
-	//
-	//	kv := make(map[string][]byte)
-	//	// this will equal to 3.2 MB of record
-	//	// 1 key consist of 24b header +  2~5 byte of kv pair
-	//	// this should split into 4 files (3x 1MB + 1x ~200KB)
-	//	for i := 0; i <= 10_000_000; i++ {
-	//		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
-	//	}
-	//	for k, v := range kv {
-	//		assert.Nil(t, store.Set([]byte(k), v))
-	//	}
-	//	for k, v := range kv {
-	//		res, err := store.Get([]byte(k))
-	//		assert.Nil(t, err)
-	//		assert.Equal(t, v, res)
-	//	}
-	//})
+		subPath, _ := path.Split(filePath)
+		dirs, err := os.ReadDir(subPath)
+		if err != nil {
+			panic(err)
+		}
+		assert.Len(t, dirs, 2) // there should be exactly 2 files in here
+	})
 
 }
 
 func TestDiskStorage_concurrent(t *testing.T) {
 
-	store, _, cleanupFunc := initStorageHelper()
-	defer cleanupFunc()
+	t.Run("concurrent 10K Key, 1KB Filesize", func(t *testing.T) {
+		store, _, cleanupFunc := initStorageHelper(t.Name(), "test")
+		defer cleanupFunc()
+		store.WithOptions(NewOptions().SetMaxFileSize("1KB"))
 
-	kv := make(map[string][]byte)
+		kv := make(map[string][]byte)
+		for i := 0; i <= 10_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
 
-	// TODO: this test is started to failing at 100K key
-	for i := 0; i <= 10_000; i++ {
-		kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
-	}
+		limitChan := make(chan struct{}, 8000) // limit maximum number of goroutine on test with race detector
 
-	limitChan := make(chan struct{}, 8000) // limit maximum number of goroutine on test with race detector
+		var wgAdd sync.WaitGroup
+		for k, v := range kv {
+			wgAdd.Add(1)
+			limitChan <- struct{}{}
 
-	var wgAdd sync.WaitGroup
-	for k, v := range kv {
-		wgAdd.Add(1)
-		limitChan <- struct{}{}
+			go func(k, v []byte) {
+				defer wgAdd.Done()
 
-		go func(k, v []byte) {
-			defer wgAdd.Done()
+				assert.NoError(t, store.Set(k, v))
+				res, err := store.Get(k)
+				assert.Nil(t, err)
+				equalByte(t, v, res)
 
-			assert.NoError(t, store.Set(k, v))
-			res, err := store.Get(k)
-			assert.Nil(t, err)
-			equalByte(t, v, res)
+				<-limitChan
+			}([]byte(k), v)
+		}
+		wgAdd.Wait()
 
-			<-limitChan
-		}([]byte(k), v)
-	}
-	wgAdd.Wait()
+		var wgGet sync.WaitGroup
+		for k, v := range kv {
+			wgGet.Add(1)
+			limitChan <- struct{}{}
 
-	var wgGet sync.WaitGroup
-	for k, v := range kv {
-		wgGet.Add(1)
-		limitChan <- struct{}{}
+			go func(k string, v []byte) {
+				defer wgGet.Done()
 
-		go func(k string, v []byte) {
-			defer wgGet.Done()
+				res, err := store.Get([]byte(k))
+				assert.Nil(t, err)
+				assert.Equal(t, v, res)
 
-			res, err := store.Get([]byte(k))
-			assert.Nil(t, err)
-			assert.Equal(t, v, res)
+				<-limitChan
+			}(k, v)
+		}
+		wgGet.Wait()
+	})
 
-			<-limitChan
-		}(k, v)
-	}
-	wgGet.Wait()
+	t.Run("concurrent 10K Key, 1MB Filesize", func(t *testing.T) {
+		store, _, cleanupFunc := initStorageHelper(t.Name(), "test")
+		defer cleanupFunc()
+		store.WithOptions(NewOptions().SetMaxFileSize("1MB"))
+
+		kv := make(map[string][]byte)
+		for i := 0; i <= 10_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
+
+		limitChan := make(chan struct{}, 8000) // limit maximum number of goroutine on test with race detector
+
+		var wgAdd sync.WaitGroup
+		for k, v := range kv {
+			wgAdd.Add(1)
+			limitChan <- struct{}{}
+
+			go func(k, v []byte) {
+				defer wgAdd.Done()
+
+				assert.NoError(t, store.Set(k, v))
+				res, err := store.Get(k)
+				assert.Nil(t, err)
+				equalByte(t, v, res)
+
+				<-limitChan
+			}([]byte(k), v)
+		}
+		wgAdd.Wait()
+
+		var wgGet sync.WaitGroup
+		for k, v := range kv {
+			wgGet.Add(1)
+			limitChan <- struct{}{}
+
+			go func(k string, v []byte) {
+				defer wgGet.Done()
+
+				res, err := store.Get([]byte(k))
+				assert.Nil(t, err)
+				assert.Equal(t, v, res)
+
+				<-limitChan
+			}(k, v)
+		}
+		wgGet.Wait()
+	})
+
+	t.Run("concurrent 100K Key, 1MB Filesize", func(t *testing.T) {
+		store, _, cleanupFunc := initStorageHelper(t.Name(), "test")
+		defer cleanupFunc()
+		store.WithOptions(NewOptions().SetMaxFileSize("1MB"))
+
+		kv := make(map[string][]byte)
+		for i := 0; i <= 100_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
+
+		limitChan := make(chan struct{}, 8000) // limit maximum number of goroutine on test with race detector
+
+		var wgAdd sync.WaitGroup
+		for k, v := range kv {
+			wgAdd.Add(1)
+			limitChan <- struct{}{}
+
+			go func(k, v []byte) {
+				defer wgAdd.Done()
+
+				assert.NoError(t, store.Set(k, v))
+				res, err := store.Get(k)
+				assert.Nil(t, err)
+				equalByte(t, v, res)
+
+				<-limitChan
+			}([]byte(k), v)
+		}
+		wgAdd.Wait()
+
+		var wgGet sync.WaitGroup
+		for k, v := range kv {
+			wgGet.Add(1)
+			limitChan <- struct{}{}
+
+			go func(k string, v []byte) {
+				defer wgGet.Done()
+
+				res, err := store.Get([]byte(k))
+				assert.Nil(t, err)
+				assert.Equal(t, v, res)
+
+				<-limitChan
+			}(k, v)
+		}
+		wgGet.Wait()
+	})
+
+	t.Run("concurrent 1M Key, 100MB Filesize", func(t *testing.T) {
+		store, _, cleanupFunc := initStorageHelper(t.Name(), "test")
+		defer cleanupFunc()
+		store.WithOptions(NewOptions().SetMaxFileSize("100MB"))
+
+		kv := make(map[string][]byte)
+		for i := 0; i <= 1_000_000; i++ {
+			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
+		}
+
+		limitChan := make(chan struct{}, 8000) // limit maximum number of goroutine on test with race detector
+
+		var wgAdd sync.WaitGroup
+		for k, v := range kv {
+			wgAdd.Add(1)
+			limitChan <- struct{}{}
+
+			go func(k, v []byte) {
+				defer wgAdd.Done()
+
+				assert.NoError(t, store.Set(k, v))
+				res, err := store.Get(k)
+				assert.Nil(t, err)
+				equalByte(t, v, res)
+
+				<-limitChan
+			}([]byte(k), v)
+		}
+		wgAdd.Wait()
+
+		var wgGet sync.WaitGroup
+		for k, v := range kv {
+			wgGet.Add(1)
+			limitChan <- struct{}{}
+
+			go func(k string, v []byte) {
+				defer wgGet.Done()
+
+				res, err := store.Get([]byte(k))
+				assert.Nil(t, err)
+				assert.Equal(t, v, res)
+
+				<-limitChan
+			}(k, v)
+		}
+		wgGet.Wait()
+	})
+
 }
 
 func BenchmarkDiskStorage_Set(b *testing.B) {
