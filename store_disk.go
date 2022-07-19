@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -104,8 +105,7 @@ func (s *DiskStorage) Set(key, value []byte) error {
 
 	fileID, file := s.currentFiles()
 	if file.Size() >= s.maxFileSize {
-		file = openDataFile(fmt.Sprintf("%s_%d", s.dbFileFullPath, fileID+1))
-		fileID = s.addNewDataFile(file)
+		fileID, file = s.addNewDataFile()
 	}
 
 	_, offset, err := file.Write(databyte)
@@ -263,13 +263,16 @@ func (s *DiskStorage) flush() error {
 }
 
 // addNewDataFile will add new datafile to file list and return its file id
-func (s *DiskStorage) addNewDataFile(file *datafile) int {
+func (s *DiskStorage) addNewDataFile() (int, *datafile) {
 	s.Lock()
-	s.files = append(s.files, file)
-	id := len(s.files) - 1
-	s.Unlock()
+	defer s.Unlock()
 
-	return id
+	fileID := len(s.files)
+	fileName := s.dbFileFullPath + "_" + strconv.Itoa(fileID)
+	file := openDataFile(fileName)
+	s.files = append(s.files, file)
+
+	return fileID, file
 }
 
 //currentFiles will get index of current active file and the file itself
