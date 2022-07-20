@@ -103,10 +103,12 @@ func (s *DiskStorage) Set(key, value []byte) error {
 	data := newEntry(time.Now().UnixNano(), key, value)
 	dataSize, databyte := data.encode()
 
+	s.Lock()
 	fileID, file := s.currentFiles()
 	if file.Size() >= s.maxFileSize {
 		fileID, file = s.addNewDataFile()
 	}
+	s.Unlock()
 
 	_, offset, err := file.Write(databyte)
 	if err != nil {
@@ -232,9 +234,7 @@ func (s *DiskStorage) initKeyDir() {
 
 				currOffset += int64(totalSize)
 			}
-
 		}
-
 	}
 }
 
@@ -264,9 +264,6 @@ func (s *DiskStorage) flush() error {
 
 // addNewDataFile will add new datafile to file list and return its file id
 func (s *DiskStorage) addNewDataFile() (int, *datafile) {
-	s.Lock()
-	defer s.Unlock()
-
 	fileID := len(s.files)
 	fileName := s.dbFileFullPath + "_" + strconv.Itoa(fileID)
 	file := openDataFile(fileName)
@@ -277,10 +274,8 @@ func (s *DiskStorage) addNewDataFile() (int, *datafile) {
 
 //currentFiles will get index of current active file and the file itself
 func (s *DiskStorage) currentFiles() (int, *datafile) {
-	s.RLock()
 	fileID := len(s.files) - 1
 	f := s.files[fileID]
-	s.RUnlock()
 
 	return fileID, f
 }

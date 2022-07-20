@@ -10,17 +10,16 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-
 	"github.com/stretchr/testify/assert"
 )
 
 func initStorageHelper(name ...string) (*DiskStorage, string, func()) {
 	filename := ""
-	baseTestPath := "testdata"     // location for test file, so we don't clutter root project
-	testFolder := uuid.NewString() // each test will get its own folder
+	baseTestPath := "testdata"                     // location for test file, so we don't clutter root project
+	testFolder := name[0] + "_" + uuid.NewString() // each test will get its own folder
 
 	if len(name) >= 1 {
-		filename = path.Join(append([]string{baseTestPath, testFolder}, name...)...)
+		filename = path.Join(append([]string{baseTestPath, testFolder}, name[1:]...)...)
 	} else {
 		filename = path.Join(baseTestPath, testFolder, uuid.NewString())
 	}
@@ -174,13 +173,14 @@ func TestDiskStorage_multiKey(t *testing.T) {
 
 func TestDiskStorage_concurrent(t *testing.T) {
 
-	t.Run("concurrent 10K Key, 1KB Filesize", func(t *testing.T) {
-		store, _, cleanupFunc := initStorageHelper(t.Name(), "test")
-		defer cleanupFunc()
+	t.Run("concurrent 1K Key, 1KB Filesize", func(t *testing.T) {
+		store, filePath, _ := initStorageHelper(t.Name(), "test")
+		//defer cleanupFunc()
+
 		store.WithOptions(NewOptions().SetMaxFileSize("1KB"))
 
 		kv := make(map[string][]byte)
-		for i := 0; i <= 10_000; i++ {
+		for i := 0; i <= 1_000; i++ { // this will generate ~29KB of data
 			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 		}
 
@@ -220,6 +220,13 @@ func TestDiskStorage_concurrent(t *testing.T) {
 			}(k, v)
 		}
 		wgGet.Wait()
+
+		subPath, _ := path.Split(filePath)
+		dirs, err := os.ReadDir(subPath)
+		if err != nil {
+			panic(err)
+		}
+		assert.Len(t, dirs, 29)
 	})
 
 	t.Run("concurrent 10K Key, 1MB Filesize", func(t *testing.T) {
@@ -277,54 +284,6 @@ func TestDiskStorage_concurrent(t *testing.T) {
 
 		kv := make(map[string][]byte)
 		for i := 0; i <= 100_000; i++ {
-			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
-		}
-
-		limitChan := make(chan struct{}, 8000) // limit maximum number of goroutine on test with race detector
-
-		var wgAdd sync.WaitGroup
-		for k, v := range kv {
-			wgAdd.Add(1)
-			limitChan <- struct{}{}
-
-			go func(k, v []byte) {
-				defer wgAdd.Done()
-
-				assert.NoError(t, store.Set(k, v))
-				res, err := store.Get(k)
-				assert.Nil(t, err)
-				equalByte(t, v, res)
-
-				<-limitChan
-			}([]byte(k), v)
-		}
-		wgAdd.Wait()
-
-		var wgGet sync.WaitGroup
-		for k, v := range kv {
-			wgGet.Add(1)
-			limitChan <- struct{}{}
-
-			go func(k string, v []byte) {
-				defer wgGet.Done()
-
-				res, err := store.Get([]byte(k))
-				assert.Nil(t, err)
-				assert.Equal(t, v, res)
-
-				<-limitChan
-			}(k, v)
-		}
-		wgGet.Wait()
-	})
-
-	t.Run("concurrent 1M Key, 100MB Filesize", func(t *testing.T) {
-		store, _, cleanupFunc := initStorageHelper(t.Name(), "test")
-		defer cleanupFunc()
-		store.WithOptions(NewOptions().SetMaxFileSize("100MB"))
-
-		kv := make(map[string][]byte)
-		for i := 0; i <= 1_000_000; i++ {
 			kv[strconv.Itoa(i)] = []byte(strconv.Itoa(i))
 		}
 
